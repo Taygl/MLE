@@ -60,6 +60,7 @@ def generate_first_of_month_dates(start_date_str, end_date_str):
 dates_str_lst = generate_first_of_month_dates(start_date_str, end_date_str)
 print(dates_str_lst)
 
+# create datalake 
 # create bronze datalake
 bronze_lms_directory = "datamart/bronze/lms/"
 
