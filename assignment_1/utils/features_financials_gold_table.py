@@ -14,7 +14,7 @@ import argparse
 from pyspark.ml import Pipeline
 from pyspark.ml.feature import StringIndexer, OneHotEncoder
 
-from pyspark.sql.functions import col, row_number, to_date, count, percentile_approx, desc, udf
+from pyspark.sql.functions import col, row_number, to_date, count, percentile_approx, desc, udf, array_contains
 from pyspark.sql.types import StringType, IntegerType, FloatType, DateType, DoubleType, ArrayType
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DateType
 from pyspark.sql.window import Window
@@ -32,30 +32,53 @@ def features_financials_gold_table(snapshot_date_str, silver_features_financials
     print('loaded from:', filepath, 'row count:', df.count())
 
     # Imputation
-
     column_type_map = {
-        "Customer_ID": StringType(),
-        "Annual_Income": DoubleType(),
-        "Monthly_Inhand_Salary": DoubleType(),
-        "Num_Bank_Accounts": IntegerType(),
-        "Num_Credit_Card": IntegerType(),
-        "Interest_Rate": IntegerType(),
-        "Type_of_Loan": StringType(),
-        "Delay_from_due_date": IntegerType(),
-        "Num_of_Delayed_Payment": IntegerType(),
-        "Changed_Credit_Limit": DoubleType(),
-        "Num_Credit_Inquiries": IntegerType(),
-        "Credit_Mix": StringType(),
-        "Outstanding_Debt": DoubleType(),
-        "Credit_Utilization_Ratio": DoubleType(),
-        "Credit_History_Age": DoubleType(),
-        "Payment_of_Min_Amount": StringType(),
-        "Total_EMI_per_month": DoubleType(),
-        "Amount_invested_monthly": DoubleType(),
-        "Payment_Behaviour": StringType(),
-        "Monthly_Balance": DoubleType(),      
-        "snapshot_date": DateType(),
+    "Customer_ID": StringType(),
+    "Annual_Income": DoubleType(),
+    "Monthly_Inhand_Salary": DoubleType(),
+    "Num_Bank_Accounts": IntegerType(),
+    "Num_Credit_Card": IntegerType(),
+    "Interest_Rate": IntegerType(),
+    "Delay_from_due_date": IntegerType(),
+    "Num_of_Delayed_Payment": IntegerType(),
+    "Changed_Credit_Limit": DoubleType(),
+    "Num_Credit_Inquiries": IntegerType(),
+    "Credit_Mix": StringType(),
+    "Outstanding_Debt": DoubleType(),
+    "Credit_Utilization_Ratio": DoubleType(),
+    "Credit_History_Age": DoubleType(),
+    "Payment_of_Min_Amount": StringType(),
+    "Total_EMI_per_month": DoubleType(),
+    "Amount_invested_monthly": DoubleType(),
+    "Payment_Behaviour": StringType(),
+    "Monthly_Balance": DoubleType(),      
+    "snapshot_date": DateType(),
+    "Loan_List": ArrayType(StringType()),
+    "Loan": StringType()
     }
+    # column_type_map = {
+    #     "Customer_ID": StringType(),
+    #     "Annual_Income": DoubleType(),
+    #     "Monthly_Inhand_Salary": DoubleType(),
+    #     "Num_Bank_Accounts": IntegerType(),
+    #     "Num_Credit_Card": IntegerType(),
+    #     "Interest_Rate": IntegerType(),
+    #     "Type_of_Loan": StringType(),
+    #     "Delay_from_due_date": IntegerType(),
+    #     "Num_of_Delayed_Payment": IntegerType(),
+    #     "Changed_Credit_Limit": DoubleType(),
+    #     "Num_Credit_Inquiries": IntegerType(),
+    #     "Credit_Mix": StringType(),
+    #     "Outstanding_Debt": DoubleType(),
+    #     "Credit_Utilization_Ratio": DoubleType(),
+    #     "Credit_History_Age": DoubleType(),
+    #     "Payment_of_Min_Amount": StringType(),
+    #     "Total_EMI_per_month": DoubleType(),
+    #     "Amount_invested_monthly": DoubleType(),
+    #     "Payment_Behaviour": StringType(),
+    #     "Monthly_Balance": DoubleType(),      
+    #     "snapshot_date": DateType(),
+    # }
 
     # List of excluded columns
     excluded_cols = ["Customer_ID", "snapshot_date"]
@@ -64,26 +87,16 @@ def features_financials_gold_table(snapshot_date_str, silver_features_financials
     string_cols = [c for c, t in column_type_map.items() if isinstance(t, StringType) and c not in excluded_cols]
     numeric_cols = [c for c, t in column_type_map.items() if isinstance(t, (IntegerType, DoubleType)) and c not in excluded_cols]
 
-    # Impute empty or space-only strings with the most frequent value
+    # Impute empty with Unknown
     df_imputed = df
 
-    for col_name in string_cols:
-        # Find the most frequent (mode) value in the column
-        mode_row = df_imputed.groupBy(col_name).count().orderBy(F.desc("count")).first()
-        mode_val = mode_row[0] if mode_row and mode_row[0] is not None else None
+    df_imputed = df_imputed.fillna("Unknown", subset=string_cols)
 
-        # If a mode is found, replace empty or space-only strings with the mode value
-        if mode_val:
-            df_imputed = df_imputed.withColumn(
-                col_name,
-                when((col(col_name).isNull()) | (trim(col(col_name)) == ""), mode_val).otherwise(col(col_name))
-            )
-        else:
-            # If no mode found (which shouldn't happen), replace with "Unknown"
-            df_imputed = df_imputed.withColumn(
-                col_name,
-                when((col(col_name).isNull()) | (trim(col(col_name)) == ""), "Unknown").otherwise(col(col_name))
-            )
+    for col_name in string_cols:
+        df_imputed = df_imputed.withColumn(
+            col_name,
+            when(trim(col(col_name)) == "", "Unknown").otherwise(col(col_name))
+        )
 
     # Impute numeric columns with the median
     for col_name in numeric_cols:
@@ -91,9 +104,31 @@ def features_financials_gold_table(snapshot_date_str, silver_features_financials
         df_imputed = df_imputed.fillna({col_name: median})
 
     #One hot encoding
-    categorical_cols = ["Type_of_Loan", "Credit_Mix", "Payment_Behaviour"]
+    df_imputed = df_imputed.withColumn(
+        "Loan",
+        when(col("Loan") == "Unknown", "Not Specified")
+        .otherwise(col("Loan"))
+    )
 
-    # Index and one-hot encode (with dropLast=True to mimic drop_first=True)
+    # 4. Get all unique loan types (including "Unknown")
+    loan_types = df_imputed.select("Loan").distinct().rdd.flatMap(lambda x: x).filter(lambda x: x.strip() != "") .collect()
+
+    # 5. One-hot encode: add a column for each unique loan type
+    for loan in loan_types:
+        clean_col_name = loan.replace(" ", "_")
+        df_imputed = df_imputed.withColumn(
+            clean_col_name,
+            (array_contains(col("Loan_List"), loan)).cast("int")
+        )
+
+    # 6. Drop intermediate columns
+    df_imputed = df_imputed.drop("Loan", "Loan_List")
+    df_imputed = df_imputed.withColumnRenamed('Not_Specified', 'Not_Specified_Loan')
+    df_imputed = df_imputed.drop('Not_Specified_Loan')
+
+    categorical_cols = ["Credit_Mix", "Payment_Behaviour"]
+
+    # Step 1: Index and one-hot encode (with dropLast=True to mimic drop_first=True)
     indexers = [StringIndexer(inputCol=c, outputCol=c+"_index", handleInvalid="keep") for c in categorical_cols]
     encoders = [OneHotEncoder(inputCol=c+"_index", outputCol=c+"_ohe", dropLast=True) for c in categorical_cols]
 
@@ -101,10 +136,10 @@ def features_financials_gold_table(snapshot_date_str, silver_features_financials
     model = pipeline.fit(df_imputed)
     df_encoded = model.transform(df_imputed)
 
-    # Convert vector to array
+    # Step 2: Convert vector to array
     vector_to_array_udf = udf(lambda v: v.toArray().tolist(), ArrayType(DoubleType()))
 
-    # Split each one-hot vector into binary columns
+    # Step 3: Split each one-hot vector into binary columns
     for c in categorical_cols:
         arr_col = c + "_arr"
         df_encoded = df_encoded.withColumn(arr_col, vector_to_array_udf(col(c + "_ohe")))
@@ -118,6 +153,7 @@ def features_financials_gold_table(snapshot_date_str, silver_features_financials
 
         # Drop original column + intermediates
         df_encoded = df_encoded.drop(c, c + "_index", c + "_ohe", arr_col)
+
 
     # Feature Engineering
     # recent delay is > 10 days, else 0

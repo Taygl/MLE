@@ -73,30 +73,57 @@ def features_financials_silver_table(snapshot_date_str, bronze_features_financia
     )
 
     # Type_of_Loan
-    # Split on ',' and 'and', normalize separators
-    df_cleaned = df_cleaned.withColumn(
-        "Type_of_Loan_Array",
-        split(
-            regexp_replace(col("Type_of_Loan"), r"\s*and\s*|\s*,\s*", ","), 
-            ","
-        )
-    )
+    # Clean up type of loan and split them nicely
+    # 1. Fill null or empty strings with "Not_Specified"
+    df_filled = df_cleaned.fillna("Not Specified", subset=["Type_of_Loan"])
 
-    # Trim entries, remove "Not Specified", deduplicate, sort
-    df_cleaned = df_cleaned.withColumn(
+    # Replace empty strings in 'Type_of_Loan' with 'Not Specified'
+    df_filled = df_filled.withColumn(
         "Type_of_Loan",
-        concat_ws(
-            ", ",
-            array_sort(  # sort for consistency
-                array_distinct(  # Remove duplicates
-                    expr("filter(transform(Type_of_Loan_Array, x -> trim(x)), x -> x != 'Not Specified')")  # Remove 'Not Specified'
-                )
-            )
-        )
+        when(trim(col("Type_of_Loan")) == "", "Not Specified").otherwise(col("Type_of_Loan"))
     )
 
-    # Drop the intermediate Type_of_Loan_Array column
-    df_cleaned = df_cleaned.drop("Type_of_Loan_Array")
+
+    # 2. Clean: replace "and" with commas, split, and trim
+    df_cleaned = df_filled.withColumn(
+        "Cleaned_Loans",
+        regexp_replace("Type_of_Loan", r"\s*and\s*", ",")
+    )
+
+    df_split = df_cleaned.withColumn(
+        "Loan_List",
+        split(regexp_replace(col("Cleaned_Loans"), r",\s*", ","), ",")
+    )
+
+    # 3. Explode to get distinct loan types
+    df_exploded = df_split.withColumn("Loan", explode(col("Loan_List"))).withColumn("Loan", trim(col("Loan")))
+
+    df_cleaned = df_exploded.drop("Type_of_Loan","Cleaned_Loans")
+
+    # # Split on ',' and 'and', normalize separators
+    # df_cleaned = df_cleaned.withColumn(
+    #     "Type_of_Loan_Array",
+    #     split(
+    #         regexp_replace(col("Type_of_Loan"), r"\s*and\s*|\s*,\s*", ","), 
+    #         ","
+    #     )
+    # )
+
+    # # Trim entries, remove "Not Specified", deduplicate, sort
+    # df_cleaned = df_cleaned.withColumn(
+    #     "Type_of_Loan",
+    #     concat_ws(
+    #         ", ",
+    #         array_sort(  # sort for consistency
+    #             array_distinct(  # Remove duplicates
+    #                 expr("filter(transform(Type_of_Loan_Array, x -> trim(x)), x -> x != 'Not Specified')")  # Remove 'Not Specified'
+    #             )
+    #         )
+    #     )
+    # )
+
+    # # Drop the intermediate Type_of_Loan_Array column
+    # df_cleaned = df_cleaned.drop("Type_of_Loan_Array")
 
     # Delay_from_due_date
     # Cast to integer and replace negative delays with null
@@ -247,28 +274,52 @@ def features_financials_silver_table(snapshot_date_str, bronze_features_financia
     # clean data: enforce schema / data type
     # Dictionary specifying columns and their desired datatypes
     column_type_map = {
-        "Customer_ID": StringType(),
-        "Annual_Income": DoubleType(),
-        "Monthly_Inhand_Salary": DoubleType(),
-        "Num_Bank_Accounts": IntegerType(),
-        "Num_Credit_Card": IntegerType(),
-        "Interest_Rate": IntegerType(),
-        "Type_of_Loan": StringType(),
-        "Delay_from_due_date": IntegerType(),
-        "Num_of_Delayed_Payment": IntegerType(),
-        "Changed_Credit_Limit": DoubleType(),
-        "Num_Credit_Inquiries": IntegerType(),
-        "Credit_Mix": StringType(),
-        "Outstanding_Debt": DoubleType(),
-        "Credit_Utilization_Ratio": DoubleType(),
-        "Credit_History_Age": DoubleType(),
-        "Payment_of_Min_Amount": StringType(),
-        "Total_EMI_per_month": DoubleType(),
-        "Amount_invested_monthly": DoubleType(),
-        "Payment_Behaviour": StringType(),
-        "Monthly_Balance": DoubleType(),      
-        "snapshot_date": DateType(),
-    }
+    "Customer_ID": StringType(),
+    "Annual_Income": DoubleType(),
+    "Monthly_Inhand_Salary": DoubleType(),
+    "Num_Bank_Accounts": IntegerType(),
+    "Num_Credit_Card": IntegerType(),
+    "Interest_Rate": IntegerType(),
+    "Delay_from_due_date": IntegerType(),
+    "Num_of_Delayed_Payment": IntegerType(),
+    "Changed_Credit_Limit": DoubleType(),
+    "Num_Credit_Inquiries": IntegerType(),
+    "Credit_Mix": StringType(),
+    "Outstanding_Debt": DoubleType(),
+    "Credit_Utilization_Ratio": DoubleType(),
+    "Credit_History_Age": DoubleType(),
+    "Payment_of_Min_Amount": StringType(),
+    "Total_EMI_per_month": DoubleType(),
+    "Amount_invested_monthly": DoubleType(),
+    "Payment_Behaviour": StringType(),
+    "Monthly_Balance": DoubleType(),      
+    "snapshot_date": DateType(),
+    "Loan_List": ArrayType(StringType()),
+    "Loan": StringType()
+}
+    # column_type_map = {
+    #     "Customer_ID": StringType(),
+    #     "Annual_Income": DoubleType(),
+    #     "Monthly_Inhand_Salary": DoubleType(),
+    #     "Num_Bank_Accounts": IntegerType(),
+    #     "Num_Credit_Card": IntegerType(),
+    #     "Interest_Rate": IntegerType(),
+    #     "Type_of_Loan": StringType(),
+    #     "Delay_from_due_date": IntegerType(),
+    #     "Num_of_Delayed_Payment": IntegerType(),
+    #     "Changed_Credit_Limit": DoubleType(),
+    #     "Num_Credit_Inquiries": IntegerType(),
+    #     "Credit_Mix": StringType(),
+    #     "Outstanding_Debt": DoubleType(),
+    #     "Credit_Utilization_Ratio": DoubleType(),
+    #     "Credit_History_Age": DoubleType(),
+    #     "Payment_of_Min_Amount": StringType(),
+    #     "Total_EMI_per_month": DoubleType(),
+    #     "Amount_invested_monthly": DoubleType(),
+    #     "Payment_Behaviour": StringType(),
+    #     "Monthly_Balance": DoubleType(),      
+    #     "snapshot_date": DateType(),
+    # }
 
     #change to new dtype
     for column, new_type in column_type_map.items():
