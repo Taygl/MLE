@@ -9,20 +9,19 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import pprint
 import pyspark
+import pyspark.sql.functions as F
 
 from pyspark.ml import Pipeline
 from pyspark.ml.feature import StringIndexer, OneHotEncoder
 
-import pyspark.sql.functions as F
 from pyspark.ml.linalg import SparseVector
 from pyspark.sql.functions import sum as _sum
-from pyspark.sql.functions import col, row_number, to_date, count, percentile_approx, desc, udf, collect_set, array_contains, lit
+from pyspark.sql.functions import col, row_number, to_date, count, percentile_approx, desc, udf, collect_set, array_contains, lit, last
 from pyspark.sql.types import StringType, IntegerType, FloatType, DateType, DoubleType, ArrayType, NumericType
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DateType
 from pyspark.sql.types import *
 from pyspark.sql.window import Window
 from pyspark.sql.functions import regexp_extract, regexp_replace, when, trim, initcap, round, lower, split, explode, array_distinct, array_sort, concat_ws, expr
-
 
 def feature_store_silver_table(snapshot_date_str, bronze_feature_store_directory, silver_feature_store_directory, spark):
     # prepare arguments
@@ -76,49 +75,51 @@ def feature_store_silver_table(snapshot_date_str, bronze_feature_store_directory
         .otherwise(initcap(regexp_replace(col("Occupation"), "_", " ")))  # Optional: beautify names
     )
 
+    # Define the window partitioned by customer_id and ordered by snapshot_date
+    w = Window.partitionBy("customer_id").orderBy("snapshot_date").rowsBetween(Window.unboundedPreceding, 0)
+
+    # Apply last() with ignoreNulls=True to forward-fill values
+    df_cleaned = df_cleaned.withColumn("Age", last("Age", ignorenulls=True).over(w)) \
+                .withColumn("SSN", last("SSN", ignorenulls=True).over(w)) \
+                .withColumn("Occupation", last("Occupation", ignorenulls=True).over(w))
+    
+
     # Impute missing values with 'unknown' (cast numeric to string if needed)
     df_cleaned = df_cleaned.fillna({'SSN': 'Unknown', 'Occupation': 'Unknown'})
 
     # Compute median of Age (excluding nulls)
     median_age = df_cleaned.approxQuantile("Age", [0.5], 0.01)[0]
 
-    # Create a window to fill missing Age per Customer_ID
-    w = Window.partitionBy("Customer_ID")
-
-    # 4. Fill with available Age within Customer_ID
-    df_with_age = df_cleaned.withColumn(
-        "Age_filled_by_customer", pyspark.sql.functions.first("Age", ignorenulls=True).over(w))
-
-    # 5. Fill nulls in that column with overall median
-    df_cleaned = df_with_age.withColumn("Age", pyspark.sql.functions.when(pyspark.sql.functions.col("Age_filled_by_customer").isNotNull(), pyspark.sql.functions.col("Age_filled_by_customer")).otherwise(pyspark.sql.functions.lit(median_age))).drop("Age_filled_by_customer")
+    df_cleaned = df_cleaned.fillna({"Age": median_age})
 
     # Ensure snapshot_date is timestamp (if it's not already)
-    df_cleaned = df_cleaned.withColumn("snapshot_date", pyspark.sql.functions.col("snapshot_date").cast("timestamp"))
+    df_cleaned = df_cleaned.withColumn("snapshot_date", F.col("snapshot_date").cast("timestamp"))
 
     # Define a window to get the latest non-null Name per Customer_ID
-    w = Window.partitionBy("Customer_ID").orderBy(pyspark.sql.functions.col("snapshot_date").desc())
+    w = Window.partitionBy("Customer_ID").orderBy(F.col("snapshot_date").desc())
 
     # Get latest non-null Name
     df_cleaned = df_cleaned.withColumn(
         "latest_name",
-        pyspark.sql.functions.first("Name", ignorenulls=True).over(w)
+        F.first("Name", ignorenulls=True).over(w)
     )
 
     # Fill Name column with latest if null, otherwise keep original
     df_cleaned = df_cleaned.withColumn(
-        "Name_filled", pyspark.sql.functions.when(pyspark.sql.functions.col("Name").isNull(), pyspark.sql.functions.col("latest_name")).otherwise(pyspark.sql.functions.col("Name")))
+        "Name_filled",
+        F.when(F.col("Name").isNull(), F.col("latest_name")).otherwise(F.col("Name"))
+    )
 
     # Fill remaining nulls (if customer had no name at all) with 'Unknown'
     df_cleaned = df_cleaned.withColumn(
         "Name_filled",
-        pyspark.sql.functions.when(pyspark.sql.functions.col("Name_filled").isNull(), pyspark.sql.functions.lit("Unknown")).otherwise(pyspark.sql.functions.col("Name_filled"))
+        F.when(F.col("Name_filled").isNull(), F.lit("Unknown")).otherwise(F.col("Name_filled"))
     )
 
     # Replace original Name column
     df_cleaned = df_cleaned.drop("Name", "latest_name").withColumnRenamed("Name_filled", "Name")
 
 
-    # Clean cols in features_financials
     # Clean annual income
     # Remove non-numeric characters
     df_cleaned = df_cleaned.withColumn(
@@ -144,6 +145,7 @@ def feature_store_silver_table(snapshot_date_str, bronze_feature_store_directory
         round(col("Monthly_Inhand_Salary"), 2)
     )
 
+
     # Clean Num_Bank_Accounts
     # Convert to integer and handle invalid values
     df_cleaned = df_cleaned.withColumn(
@@ -165,7 +167,17 @@ def feature_store_silver_table(snapshot_date_str, bronze_feature_store_directory
         when(col("Num_of_Loan") < 0, None).otherwise(col("Num_of_Loan"))
     )
 
-    # Type of Loan
+    # forward fill
+    categorical_cols = ['Type_of_Loan']
+
+    # Define window spec for forward fill
+    w = Window.partitionBy("customer_id").orderBy("snapshot_date").rowsBetween(Window.unboundedPreceding, 0)
+
+    # Forward fill each numerical column
+    for col_name in categorical_cols:
+        df_cleaned = df_cleaned.withColumn(col_name, last(col_name, ignorenulls=True).over(w))
+
+
     # Clean up type of loan and split them nicely
     # 1. Fill null or empty strings with "Not_Specified"
     df_cleaned = df_cleaned.fillna("Not Specified", subset=["Type_of_Loan"])
@@ -192,6 +204,7 @@ def feature_store_silver_table(snapshot_date_str, bronze_feature_store_directory
         F.expr("transform(split(cleaned_loans, ','), x -> trim(x))")
     )
 
+
     # Delay_from_due_date
     # Cast to integer and replace negative delays with null
     df_cleaned = df_cleaned.withColumn(
@@ -199,6 +212,7 @@ def feature_store_silver_table(snapshot_date_str, bronze_feature_store_directory
         when(col("Delay_from_due_date").cast("int") < 0, None)
         .otherwise(col("Delay_from_due_date").cast("int"))
     )
+
 
     # Clean Num_of_Delayed_Payment
     # Remove non-digit characters and cast to integer
@@ -212,6 +226,7 @@ def feature_store_silver_table(snapshot_date_str, bronze_feature_store_directory
         "Num_of_Delayed_Payment",
         when(col("Num_of_Delayed_Payment") < 0, None).otherwise(col("Num_of_Delayed_Payment"))
     )
+
 
     # Changed_Credit_Limit
     df_cleaned = df_cleaned.withColumn(
@@ -338,24 +353,52 @@ def feature_store_silver_table(snapshot_date_str, bronze_feature_store_directory
         round(col("Monthly_Balance"), 2)
     )
 
+    #forwardd fill the numerical columns
+    numerical_cols = [
+    'Annual_Income',
+    'Monthly_Inhand_Salary',
+    'Num_Bank_Accounts',
+    'Num_Credit_Card',
+    'Interest_Rate',
+    'Num_of_Loan',
+    'Delay_from_due_date',
+    'Num_of_Delayed_Payment',
+    'Changed_Credit_Limit',
+    'Num_Credit_Inquiries',
+    'Outstanding_Debt',
+    'Credit_Utilization_Ratio',
+    'Credit_History_Age',
+    'Total_EMI_per_month',
+    'Amount_invested_monthly',
+    'Monthly_Balance'
+    ]
+
+    # Define window spec for forward fill
+    w = Window.partitionBy("customer_id").orderBy("snapshot_date").rowsBetween(Window.unboundedPreceding, 0)
+
+    # Forward fill each numerical column
+    for col_name in numerical_cols:
+        df_cleaned = df_cleaned.withColumn(col_name, last(col_name, ignorenulls=True).over(w))
+
+
     # Columns to impute
     cols_to_impute = [
-        'Annual_Income',
-        'Monthly_Inhand_Salary',
-        'Num_Bank_Accounts',
-        'Num_Credit_Card',
-        'Interest_Rate',
-        'Num_of_Loan',
-        'Delay_from_due_date',
-        'Num_of_Delayed_Payment',
-        'Changed_Credit_Limit',
-        'Num_Credit_Inquiries',
-        'Outstanding_Debt',
-        'Credit_Utilization_Ratio',
-        'Credit_History_Age',
-        'Total_EMI_per_month',
-        'Amount_invested_monthly',
-        'Monthly_Balance'
+    'Annual_Income',
+    'Monthly_Inhand_Salary',
+    'Num_Bank_Accounts',
+    'Num_Credit_Card',
+    'Interest_Rate',
+    'Num_of_Loan',
+    'Delay_from_due_date',
+    'Num_of_Delayed_Payment',
+    'Changed_Credit_Limit',
+    'Num_Credit_Inquiries',
+    'Outstanding_Debt',
+    'Credit_Utilization_Ratio',
+    'Credit_History_Age',
+    'Total_EMI_per_month',
+    'Amount_invested_monthly',
+    'Monthly_Balance'
     ]
 
     # Calculate medians using approxQuantile
@@ -372,6 +415,17 @@ def feature_store_silver_table(snapshot_date_str, bronze_feature_store_directory
             when(col(col_name).isNull(), median_value).otherwise(col(col_name))
         )
 
+    # forward fill
+    categorical_cols = ['Credit_Mix', 'Payment_Behaviour']
+
+    # Define window spec for forward fill
+    w = Window.partitionBy("customer_id").orderBy("snapshot_date").rowsBetween(Window.unboundedPreceding, 0)
+
+    # Forward fill each numerical column
+    for col_name in categorical_cols:
+        df_cleaned = df_cleaned.withColumn(col_name, last(col_name, ignorenulls=True).over(w))
+
+
     # Categorical columns to impute with "Unknown"
     categorical_cols = ['Credit_Mix', 'Payment_of_Min_Amount', 'Payment_Behaviour']
 
@@ -382,6 +436,8 @@ def feature_store_silver_table(snapshot_date_str, bronze_feature_store_directory
             when(col(col_name).isNull(), "Unknown").otherwise(col(col_name))
         )
 
+
+    # Cast Data types
     column_type_map = {
     'Customer_ID': StringType(),
     'snapshot_date': DateType(),
