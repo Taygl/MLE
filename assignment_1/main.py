@@ -27,8 +27,8 @@ import utils.data_processing_bronze_table
 import utils.data_processing_silver_table
 import utils.data_processing_gold_table
 
-import utils.feature_store_bronze_table
-import utils.feature_store_silver_table
+import utils.feature_store_bronze_table_split
+import utils.feature_store_silver_table_join
 import utils.feature_store_gold_table
 
 # import utils.clickstream_bronze_table
@@ -128,14 +128,31 @@ print("gold label store row_count:",df.count())
 
 
 # create bronze datalake
-bronze_feature_store_directory = "datamart/bronze/feature_store/"
+# bronze_feature_store_directory = "datamart/bronze/feature_store/"
 
-if not os.path.exists(bronze_feature_store_directory):
-    os.makedirs(bronze_feature_store_directory)
+# if not os.path.exists(bronze_feature_store_directory):
+#     os.makedirs(bronze_feature_store_directory)
+
+bronze_clickstream_directory = "datamart/bronze/clickstream/"
+
+if not os.path.exists(bronze_clickstream_directory):
+    os.makedirs(bronze_clickstream_directory)
+
+
+bronze_attribute_directory = "datamart/bronze/attribute/"
+
+if not os.path.exists(bronze_attribute_directory):
+    os.makedirs(bronze_attribute_directory)
+
+
+bronze_financials_directory = "datamart/bronze/financials/"
+
+if not os.path.exists(bronze_financials_directory):
+    os.makedirs(bronze_financials_directory)
 
 # run bronze backfill
 for date_str in dates_str_lst:
-    utils.feature_store_bronze_table.feature_store_bronze_table(date_str, bronze_feature_store_directory, spark)
+    utils.feature_store_bronze_table_split.feature_store_bronze_table(date_str, bronze_clickstream_directory, bronze_attribute_directory, bronze_financials_directory, spark)
 
 # create silver datalake
 silver_feature_store_directory = "datamart/silver/feature_store/"
@@ -145,7 +162,7 @@ if not os.path.exists(silver_feature_store_directory):
 
 # run silver backfill
 for date_str in dates_str_lst:
-    utils.feature_store_silver_table.feature_store_silver_table(date_str, bronze_feature_store_directory, silver_feature_store_directory, spark)
+    utils.feature_store_silver_table_join.feature_store_silver_table(date_str, bronze_clickstream_directory, bronze_attribute_directory, bronze_financials_directory, silver_feature_store_directory, spark)
 
 # create gold datalake
 gold_feature_store_directory = "datamart/gold/feature_store/"
