@@ -127,7 +127,7 @@ def main(snapshotdate, modelname):
 
         # Add legend and labels
         plt.legend()
-        plt.title("KDE of predictions")
+        plt.title('KDE_of_predictions_'+ f'{snapshotdate}'.replace('-','_'))
         plt.xlabel("Value")
         plt.ylabel("Density")
 
@@ -137,6 +137,97 @@ def main(snapshotdate, modelname):
         # Save the figure
         plt.savefig(filepath, dpi=300, bbox_inches='tight')
         plt.close('all')
+
+
+        # monitor features
+        # --- load feature store ---
+        # cust_fin
+        cust_fin_risk_directory = f"./datamart/gold/feature_store/cust_fin_risk/"
+
+        partition_name = 'gold_ft_store_cust_fin_risk_' + f'{snapshotdate}'.replace('-','_') + '.parquet'
+        filepath = cust_fin_risk_directory + partition_name
+        cust_fin_risk_df = spark.read.parquet(filepath)
+        print('loaded from:', filepath, 'row count:', cust_fin_risk_df.count())
+        cust_fin_risk_df = cust_fin_risk_df.toPandas()
+
+        print(cust_fin_risk_df.columns)
+
+        #get last month's cust_fin_risk
+        date_obj = pd.to_datetime(snapshotdate)
+        # Subtract 1 month
+        previous_feature_date = (date_obj - pd.DateOffset(months=1)).strftime("%Y-%m-%d")
+
+        partition_name = 'gold_ft_store_cust_fin_risk_' + f'{previous_feature_date}'.replace('-','_') + '.parquet'
+        filepath = cust_fin_risk_directory + partition_name
+        prev_cust_fin_risk_df = spark.read.parquet(filepath)
+        print('loaded from:', filepath, 'row count:', prev_cust_fin_risk_df.count())
+        prev_cust_fin_risk_df = prev_cust_fin_risk_df.toPandas()
+
+        cust_fin_risk_cols = ['Credit_History_Age', 'Num_Fin_Pdts',
+            'EMI_to_Salary', 'Debt_to_Salary', 'Repayment_Ability',
+            'Loans_per_Credit_Item', 'Loan_Extent', 'Outstanding_Debt',
+            'Interest_Rate', 'Delay_from_due_date', 'Changed_Credit_Limit']
+
+        for col_name in cust_fin_risk_cols:
+            # Plot KDE of predictions of previous vs current
+            sns.kdeplot(prev_cust_fin_risk_df[col_name], label=f'last mth {col_name}', shade=True)
+            sns.kdeplot(cust_fin_risk_df[col_name], label=f'current {col_name}', shade=True)
+
+            # Add legend and labels
+            plt.legend()
+            plt.title(f"Distribtion_of_{col_name}_"+ f'{snapshotdate}'.replace('-','_'))
+            plt.xlabel("Value")
+            plt.ylabel("Density")
+
+            partition_name = f'{col_name}_distribution_' + f'{snapshotdate}'.replace('-','_') + '.png'
+            filepath = monitor_directory + partition_name
+
+            # Save the figure
+            plt.savefig(filepath, dpi=300, bbox_inches='tight')
+            plt.close('all')
+
+
+        # monitor features
+        # --- load feature store ---
+        # eng
+        eng_directory = f"./datamart/gold/feature_store/eng/"
+
+        partition_name = 'gold_ft_store_engagement_' + f'{snapshotdate}'.replace('-','_') + '.parquet'
+        filepath = eng_directory + partition_name
+        eng_df = spark.read.parquet(filepath)
+        print('loaded from:', filepath, 'row count:', eng_df.count())
+        eng_df = eng_df.toPandas()
+
+        #get last month's cust_fin_risk
+        date_obj = pd.to_datetime(snapshotdate)
+        # Subtract 1 month
+        previous_feature_date = (date_obj - pd.DateOffset(months=1)).strftime("%Y-%m-%d")
+
+        partition_name = 'gold_ft_store_engagement_' + f'{previous_feature_date}'.replace('-','_') + '.parquet'
+        filepath = eng_directory + partition_name
+        prev_eng_df = spark.read.parquet(filepath)
+        print('loaded from:', filepath, 'row count:', prev_eng_df.count())
+        prev_eng_df = prev_eng_df.toPandas()
+
+        eng_cols = ['click_1m', 'click_2m', 'click_3m','click_4m', 'click_5m', 'click_6m']
+
+        for col_name in eng_cols:
+            # Plot KDE of predictions of previous vs current
+            sns.kdeplot(prev_eng_df[col_name], label=f'last mth {col_name}', shade=True)
+            sns.kdeplot(eng_df[col_name], label=f'current {col_name}', shade=True)
+
+            # Add legend and labels
+            plt.legend()
+            plt.title(f"Distribtion_of_{col_name}_"+ f'{snapshotdate}'.replace('-','_'))
+            plt.xlabel("Value")
+            plt.ylabel("Density")
+
+            partition_name = f'{col_name}_distribution_' + f'{snapshotdate}'.replace('-','_') + '.png'
+            filepath = monitor_directory + partition_name
+
+            # Save the figure
+            plt.savefig(filepath, dpi=300, bbox_inches='tight')
+            plt.close('all')
 
         # monitor model accuracy
         label_directory = f"./datamart/gold/label_store/"
@@ -148,9 +239,9 @@ def main(snapshotdate, modelname):
 
         label_df = label_df.toPandas()
 
-        print(predictions_df.head(20))
+        print(predictions_df.head(10))
 
-        print(label_df.head(20))
+        print(label_df.head(10))
 
         # merged_df = label_df.merge(predictions_df, on="Customer_ID", how="left")
 
@@ -198,7 +289,7 @@ def main(snapshotdate, modelname):
 
         if len(df_combined['predict_psi']) >0:
             plt.plot(df_combined['snapshotdate'], df_combined['predict_psi'])
-            plt.title('PSI across snapshotdate')
+            plt.title('PSI_across_snapshotdate_'+ f'{snapshotdate}'.replace('-','_'))
             plt.xticks(rotation=90)
             plt.xlabel('snapshotdate')
             plt.ylabel('PSI')
@@ -211,7 +302,7 @@ def main(snapshotdate, modelname):
 
         if len(df_combined['roc_auc']) >0:
             plt.plot(df_combined['snapshotdate'], df_combined['roc_auc'])
-            plt.title('roc_auc across snapshotdate')
+            plt.title('roc_auc across_snapshotdate_'+ f'{snapshotdate}'.replace('-','_'))
             plt.xticks(rotation=90)
             plt.xlabel('snapshotdate')
             plt.ylabel('roc_auc')

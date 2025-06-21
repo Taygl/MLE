@@ -293,61 +293,44 @@ def main(snapshotdate):
 
             print(f"Model saved to {file_path}")
 
+            pc_monitor_directory = f"./datamart/gold/monitor/automl/"
+            
+            if not os.path.exists(pc_monitor_directory):
+                os.makedirs(pc_monitor_directory)
 
+            # save psi and auc into monitor directory
+            pc_df = pd.DataFrame({'snapshotdate': [snapshotdate], 'auc_train': [train_auc_score], 'auc_test':[test_auc_score], 'auc_oot':[oot_auc_score]})
 
-        # predictions_df = spark.read.parquet(filepath)
-        # print('loaded from:', filepath, 'row count:', predictions_df.count())
+            partition_name = "performance_ceiling_" + 'xgb_'+ snapshotdate.replace('-','_') + '.csv'
+            filepath = pc_monitor_directory + partition_name
+            pc_df.to_csv(filepath)
 
-        # predictions_df = predictions_df.toPandas()
-        # new_predict_arr = predictions_df["model_predictions"]
+            # Plot performance_ceiling trend
+            # Get list of all CSV files in the folder
+            csv_files = glob.glob(os.path.join(pc_monitor_directory, '*.csv'))
 
-        # #get last month's prediction
-        # date_obj = pd.to_datetime(snapshotdate)
-        # # Subtract 1 month
-        # previous_predict_date = (date_obj - pd.DateOffset(months=1)).strftime("%Y-%m-%d")
+            # Read and combine all CSV files into one DataFrame
+            df_combined = pd.concat([pd.read_csv(f) for f in csv_files], ignore_index=True)
+            # Convert to datetime (if not already)
+            df_combined['snapshotdate'] = pd.to_datetime(df_combined['snapshotdate'])
+            # Sort by snapshotdate
+            df_combined = df_combined.sort_values(by='snapshotdate')
+            # reset index after sorting
+            df_combined = df_combined.reset_index(drop=True)
 
-        # partition_name = f'{modelname[:-4]}' + '_predictions_' + f'{previous_predict_date}'.replace('-','_') + '.parquet'
-        # filepath = predictions_directory + partition_name
-        # previous_predictions_df = spark.read.parquet(filepath)
-        # print('loaded from:', filepath, 'row count:', predictions_df.count())
+            if len(df_combined['auc_test']) >0:
+                plt.plot(df_combined['snapshotdate'], df_combined['auc_test'])
+                plt.title('test_auc_score_across_snapshotdate_'+ f'{snapshotdate}'.replace('-','_'))
+                plt.xticks(rotation=90)
+                plt.xlabel('snapshotdate')
+                plt.ylabel('test_auc_score')
 
-        # previous_predictions_df = previous_predictions_df.toPandas()
-        # previous_predict_arr = previous_predictions_df["model_predictions"]
-        
-        # #cal psi
-        # prediction_psi = calculate_psi(previous_predict_arr, new_predict_arr)
+            partition_name = 'test_auc_score_' + f'{snapshotdate}'.replace('-','_') + '.png'
+            filepath = pc_monitor_directory + partition_name
+            # Save the figure
+            plt.savefig(filepath, dpi=300, bbox_inches='tight')
+            plt.close('all')
 
-        # print(prediction_psi)
-
-        # #send alert if huge drift
-        # if prediction_psi > 0.25:
-        #     print(f'PSI: {prediction_psi}, major prediction labels shift detected')
-        # else:
-        #     print(f'PSI: {prediction_psi}, prediction labels within range')
-
-
-        # # monitor model accuracy
-        # label_directory = f"./datamart/gold/label_store/"
-
-        # partition_name = 'gold_label_store_' +  f'{snapshotdate}'.replace('-','_') + '.parquet'
-        # filepath = label_directory + partition_name
-        # label_df = spark.read.parquet(filepath)
-        # print('loaded from:', filepath, 'row count:', predictions_df.count())
-
-        # label_df = label_df.toPandas()
-
-        # merged_df = label_df.merge(predictions_df, on="Customer_ID", how="left")
-
-        # if len(merged_df['label']) > 0:
-        #     roc_auc = roc_auc_score(merged_df['label'], merged_df["model_predictions"])
-
-        #     # in reality send alert or retrain model
-        #     if roc_auc< 0.4:
-        #         print(f'roc_auc: {roc_auc}, retraining needed')
-        #     else:
-        #         print(f'roc_auc: {roc_auc}, model performance ok')
-        # else:
-        #     print('labels not available!')
 
         
         # --- end spark session --- 

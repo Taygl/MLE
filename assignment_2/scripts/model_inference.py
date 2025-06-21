@@ -11,8 +11,9 @@ from dateutil.relativedelta import relativedelta
 import pprint
 import pyspark
 import pyspark.sql.functions as F
+from pyspark.sql import Window
 
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, last, first, coalesce
 from pyspark.sql.types import StringType, IntegerType, FloatType, DateType
 
 from sklearn.model_selection import train_test_split
@@ -78,23 +79,48 @@ def main(snapshotdate, modelname):
 
         features_sdf = cust_fin_risk_df.join(eng_df, on=["Customer_ID", "snapshot_date"], how="left")
 
-        feature_cols = ['click_1m', 'click_2m', 'click_3m', 'click_4m', 'click_5m', 'click_6m',
-        'Credit_History_Age', 'Num_Fin_Pdts', 'EMI_to_Salary', 'Debt_to_Salary',
-        'Repayment_Ability', 'Loans_per_Credit_Item', 'Loan_Extent',
-        'Outstanding_Debt', 'Interest_Rate', 'Delay_from_due_date',
-        'Changed_Credit_Limit']
+        # feature_cols = ['click_1m', 'click_2m', 'click_3m', 'click_4m', 'click_5m', 'click_6m',
+        # 'Credit_History_Age', 'Num_Fin_Pdts', 'EMI_to_Salary', 'Debt_to_Salary',
+        # 'Repayment_Ability', 'Loans_per_Credit_Item', 'Loan_Extent',
+        # 'Outstanding_Debt', 'Interest_Rate', 'Delay_from_due_date',
+        # 'Changed_Credit_Limit']
+
+        # features_pdf = features_sdf.toPandas()
+
+        # # Sort by Customer_ID and snapshot_date
+        # df_sorted = features_pdf.sort_values(by=["Customer_ID", "snapshot_date"])
+
+        # # Apply foward fill then backward fill
+        # features_pdf[feature_cols] = (
+        #     df_sorted.groupby("Customer_ID")[feature_cols]
+        #     .apply(lambda group: group.ffill().bfill())
+        #     .reset_index(drop=True)
+        # )
+
+
+        # Define columns to fill
+        feature_cols = [
+            "click_1m", "click_2m", "click_3m", "click_4m", "click_5m", "click_6m",
+            "Credit_History_Age", "Num_Fin_Pdts", "EMI_to_Salary", "Debt_to_Salary",
+            "Repayment_Ability", "Loans_per_Credit_Item", "Loan_Extent", "Outstanding_Debt",
+            "Interest_Rate", "Delay_from_due_date", "Changed_Credit_Limit"
+        ]
+
+        # Window for forward fill
+        fwd_window = Window.partitionBy("Customer_ID").orderBy("snapshot_date").rowsBetween(Window.unboundedPreceding, 0)
+
+        # Window for backward fill
+        bwd_window = Window.partitionBy("Customer_ID").orderBy("snapshot_date").rowsBetween(0, Window.unboundedFollowing)
+
+        # Apply fills
+        for col_name in feature_cols:
+            fwd_fill = last(col(col_name), ignorenulls=True).over(fwd_window)
+            bwd_fill = first(col(col_name), ignorenulls=True).over(bwd_window)
+            features_sdf = features_sdf.withColumn(col_name, coalesce(fwd_fill, bwd_fill))
 
         features_pdf = features_sdf.toPandas()
 
-        # Sort by Customer_ID and snapshot_date
-        df_sorted = features_pdf.sort_values(by=["Customer_ID", "snapshot_date"])
-
-        # Apply foward fill then backward fill
-        features_pdf[feature_cols] = (
-            df_sorted.groupby("Customer_ID")[feature_cols]
-            .apply(lambda group: group.ffill().bfill())
-            .reset_index(drop=True)
-        )
+        print(features_pdf)
 
         X_inference = features_pdf[feature_cols]
 
